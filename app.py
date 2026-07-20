@@ -1,70 +1,91 @@
 import os
-import time
 import streamlit as st
 from dotenv import load_dotenv
 from tavily import TavilyClient
 from google import genai
+import PyPDF2
 
 from styles import CUSTOM_CSS
-from prompts import FACT_CHECK_PROMPT
+from prompts import FACT_CHECK_PROMPT, CLAIM_EXTRACTION_PROMPT
+
 load_dotenv()
 
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+
 st.set_page_config(
     page_title="AI Fact Check Agent",
     page_icon="📰",
-    layout="centered"
+    layout="wide"
 )
 
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 if not GOOGLE_API_KEY:
-    st.error("❌ GOOGLE_API_KEY not found in .env file.")
+    st.error("Missing GOOGLE_API_KEY")
     st.stop()
 
 if not TAVILY_API_KEY:
-    st.error("❌ TAVILY_API_KEY not found in .env file.")
+    st.error("Missing TAVILY_API_KEY")
     st.stop()
 
 client = genai.Client(api_key=GOOGLE_API_KEY)
 tavily = TavilyClient(api_key=TAVILY_API_KEY)
 
-st.markdown("""
-<h1>📰 AI Fact Check Agent</h1>
+st.title("📰 AI Fact Check Agent")
+st.caption("Upload a PDF or manually verify a claim.")
 
-<p class="subtitle">
-Verify claims using AI-powered evidence analysis
-</p>
-""", unsafe_allow_html=True)
-
-claim = st.text_area(
-    "Enter a claim",
-    placeholder="Example: India Gate is situated in Karnataka"
+mode = st.radio(
+    "Choose Input",
+    ["📄 Upload PDF", "✍ Manual Claim"]
 )
 
-if st.button("Fact Check"):
 
-    if not claim.strip():
-        st.warning("Please enter a claim.")
-        st.stop()
-    try:
-        with st.spinner("🌐 Searching trusted sources..."):
-            search = tavily.search(
-                query=claim,
-                search_depth="advanced",
-                max_results=5
-            )
+def extract_pdf_text(uploaded_file):
+    pdf = PyPDF2.PdfReader(uploaded_file)
+    text = ""
 
-    except Exception:
-        st.error("❌ Unable to retrieve web evidence. Please try again.")
-        st.stop()
+    for page in pdf.pages:
+        page_text = page.extract_text()
+        if page_text:
+            text += page_text + "\n"
+
+    return text
+
+
+def extract_claims(text):
+
+    prompt = CLAIM_EXTRACTION_PROMPT.format(text=text[:15000])
+
+    response = client.models.generate_content(
+        model="gemini-flash-latest",
+        contents=prompt
+    )
+
+    claims = []
+
+    for line in response.text.split("\n"):
+        line = line.strip()
+
+        if line.startswith("-"):
+            claims.append(line[1:].strip())
+
+        elif line[:2].isdigit():
+            claims.append(line.split(".",1)[1].strip())
+
+    return claims
+
+
+def verify_claim(claim):
+
+    search = tavily.search(
+        query=claim,
+        search_depth="advanced",
+        max_results=3
+    )
 
     results = search.get("results", [])
 
-    if not results:
-        st.warning("No evidence found for this claim.")
-        st.stop()
     context = ""
 
     for item in results:
@@ -77,96 +98,101 @@ Content:
 
 URL:
 {item.get('url','')}
-
 """
 
     prompt = FACT_CHECK_PROMPT.format(
         claim=claim,
         context=context
     )
-    response = None
 
-    with st.spinner("🤖 Analyzing evidence..."):
+    response = client.models.generate_content(
+        model="gemini-flash-latest",
+        contents=prompt
+    )
 
-        MAX_RETRIES = 3
+    return response.text, results
 
-        for attempt in range(MAX_RETRIES):
 
-            try:
+if mode == "✍ Manual Claim":
 
-                response = client.models.generate_content(
-                    model="gemini-flash-latest",
-                    contents=prompt
+    claim = st.text_area(
+        "Enter Claim",
+        placeholder="MS Dhoni is a footballer."
+    )
+
+    if st.button("Fact Check"):
+
+        if claim.strip():
+
+            with st.spinner("Checking..."):
+                result, evidence = verify_claim(claim)
+
+            st.subheader("Result")
+            st.write(result)
+
+            st.subheader("Sources")
+
+            for e in evidence:
+                st.markdown(
+                    f"**{e['title']}**\n\n{e['url']}"
                 )
 
-                break
+else:
 
-            except Exception as e:
+    uploaded = st.file_uploader(
+        "Upload PDF",
+        type=["pdf"]
+    )
 
-                error = str(e)
+    if uploaded:
 
-                # Retry only for temporary server errors
-                if "503" in error or "UNAVAILABLE" in error:
+        if st.button("Analyze PDF"):
 
-                    if attempt < MAX_RETRIES - 1:
-                        time.sleep(4)
-                        continue
+            with st.spinner("Reading PDF..."):
 
-                    st.error(
-                        "⚠️ Gemini is experiencing high demand.\n\nPlease try again in a minute."
-                    )
-                    st.stop()
+                text = extract_pdf_text(uploaded)
+
+            with st.spinner("Extracting Claims..."):
+
+                claims = extract_claims(text)
+
+            st.success(f"Found {len(claims)} claims.")
+
+            for i, claim in enumerate(claims,1):
+
+                st.markdown("---")
+                st.subheader(f"Claim {i}")
+
+                st.write(claim)
+
+                with st.spinner("Checking claim..."):
+
+                    result, evidence = verify_claim(claim)
+
+                verdict = result.lower()
+
+                if "verified" in verdict or "true" in verdict:
+
+                    st.success("✅ VERIFIED")
+
+                elif "false" in verdict:
+
+                    st.error("❌ FALSE")
 
                 else:
-                    st.error(f"❌ AI Error:\n\n{error}")
-                    st.stop()
 
+                    st.warning("⚠ INACCURATE")
 
-    st.success("✅ Fact Check Complete")
+                st.write(result)
 
-    st.markdown("<div class='result-card'>", unsafe_allow_html=True)
+                with st.expander("Evidence"):
 
-    result = response.text if response else "No response generated."
+                    for e in evidence:
 
-    result_lower = result.lower()
+                        st.markdown(
+                            f"""
+**{e['title']}**
 
-    if "false" in result_lower:
-
-        st.markdown("""
-        <div class="false-box">
-        ❌ FALSE
-        </div>
-        """, unsafe_allow_html=True)
-
-    elif "true" in result_lower:
-
-        st.markdown("""
-        <div class="true-box">
-        ✅ TRUE
-        </div>
-        """, unsafe_allow_html=True)
-
-    else:
-
-        st.warning("⚠️ Verdict could not be determined.")
-
-    st.subheader("🤖 AI Analysis")
-    st.write(result)
-
-    st.subheader("🔗 Evidence Sources")
-
-    for item in results:
-
-        st.markdown(f"""
-<div class="source-box">
-
-🔗 <b>{item.get('title','No title')}</b><br><br>
-
-<a href="{item.get('url','')}" target="_blank">
-{item.get('url','')}
-</a>
-
-</div>
-""", unsafe_allow_html=True)
-
-    st.markdown("</div>", unsafe_allow_html=True)
+{e['url']}
+"""
+                        )
