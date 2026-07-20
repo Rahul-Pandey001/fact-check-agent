@@ -1,7 +1,5 @@
 FACT_CHECK_PROMPT = """
-You are an expert AI Fact Checker.
-
-Your task is to verify a claim using the evidence provided.
+You are an expert fact-checking assistant.
 
 Claim:
 {claim}
@@ -10,26 +8,42 @@ Evidence:
 {context}
 
 Instructions:
+1. Determine whether the claim is:
+   - Verified
+   - Inaccurate
+   - False
 
-1. Determine one verdict only:
-   ✅ True
-   ❌ False
-   ⚠️ Misleading
-   🟡 Partially True
-   ❓ Not Enough Evidence
+2. Explain why.
 
-2. Give a confidence score (0-100%).
+3. Cite the evidence.
 
-3. Explain your reasoning clearly.
+Return in this format:
 
-4. Mention conflicting evidence if present.
+Verdict: Verified / Inaccurate / False
 
-5. Provide a short final conclusion.
-
-Return ONLY in this format:
-
-Verdict:
-Confidence:
 Explanation:
-Conclusion:
+...
+
+Evidence:
+...
+"""
+
+CLAIM_EXTRACTION_PROMPT = """
+You are an expert at extracting factual claims.
+
+From the following document, extract ONLY factual claims that can be verified.
+
+Include:
+- Statistics
+- Dates
+- Financial figures
+- Technical facts
+- Historical facts
+
+Ignore opinions, advertisements and marketing language.
+
+Return ONLY a bullet list.
+
+Document:
+{text}
 """
