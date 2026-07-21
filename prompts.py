@@ -17,7 +17,7 @@ Instructions:
 
 3. Cite the evidence.
 
-Return in this format:
+Return exactly in this format:
 
 Verdict: Verified / Inaccurate / False
 
@@ -29,20 +29,27 @@ Evidence:
 """
 
 CLAIM_EXTRACTION_PROMPT = """
-You are an expert at extracting factual claims.
+You are an expert claim extraction assistant.
 
-From the following document, extract ONLY factual claims that can be verified.
+Extract ONLY factual, verifiable claims from the document.
 
-Include:
-- Statistics
-- Dates
-- Financial figures
-- Technical facts
-- Historical facts
+Ignore:
+- opinions
+- advertisements
+- greetings
+- introductions
+- conclusions
+- marketing language
 
-Ignore opinions, advertisements and marketing language.
+Return ONLY a valid JSON array.
 
-Return ONLY a bullet list.
+Example:
+
+[
+  "India became independent in 1947.",
+  "The Earth revolves around the Sun.",
+  "Water boils at 100°C at sea level."
+]
 
 Document:
 {text}
