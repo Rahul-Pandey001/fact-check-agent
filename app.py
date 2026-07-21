@@ -1,4 +1,5 @@
 import os
+import json
 import streamlit as st
 from dotenv import load_dotenv
 from tavily import TavilyClient
@@ -14,82 +15,187 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 
 st.set_page_config(
-    page_title="AI Fact Check Agent",
-    page_icon="📰",
+    page_title="📰 AI Fact Check Agent",
+    
     layout="wide"
 )
 
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 if not GOOGLE_API_KEY:
-    st.error("Missing GOOGLE_API_KEY")
+    st.error("❌ Missing GOOGLE_API_KEY")
     st.stop()
 
 if not TAVILY_API_KEY:
-    st.error("Missing TAVILY_API_KEY")
+    st.error("❌ Missing TAVILY_API_KEY")
     st.stop()
 
 client = genai.Client(api_key=GOOGLE_API_KEY)
 tavily = TavilyClient(api_key=TAVILY_API_KEY)
 
 st.title("📰 AI Fact Check Agent")
-st.caption("Upload a PDF or manually verify a claim.")
+st.caption(
+    "Upload a PDF or manually verify a claim using Gemini + Tavily."
+)
 
 mode = st.radio(
     "Choose Input",
-    ["📄 Upload PDF", "✍ Manual Claim"]
+    [
+        "📄 Upload PDF",
+        "✍ Manual Claim"
+    ]
 )
 
-
 def extract_pdf_text(uploaded_file):
-    pdf = PyPDF2.PdfReader(uploaded_file)
-    text = ""
+    """
+    Extract all readable text from PDF.
+    """
 
-    for page in pdf.pages:
-        page_text = page.extract_text()
-        if page_text:
-            text += page_text + "\n"
+    try:
+        pdf = PyPDF2.PdfReader(uploaded_file)
 
-    return text
+        text = ""
 
+        for page in pdf.pages:
+
+            page_text = page.extract_text()
+
+            if page_text:
+                text += page_text + "\n"
+
+        return text.strip()
+
+    except Exception as e:
+
+        st.error(f"Error reading PDF: {e}")
+
+        return ""
+
+def show_debug(text):
+
+    with st.expander("🔍 Debug Information"):
+
+        st.write("Characters extracted:", len(text))
+
+        st.text_area(
+            "Extracted PDF Text",
+            text[:3000],
+            height=250
+        )
 
 def extract_claims(text):
 
-    prompt = CLAIM_EXTRACTION_PROMPT.format(text=text[:15000])
+    if not text.strip():
+        st.error("No text found inside the PDF.")
+        return []
 
-    response = client.models.generate_content(
-        model="gemini-flash-latest",
-        contents=prompt
+    prompt = CLAIM_EXTRACTION_PROMPT.format(
+        text=text[:20000]
     )
 
-    claims = []
+    try:
 
-    for line in response.text.split("\n"):
-        line = line.strip()
+        response = client.models.generate_content(
+    model="gemini-3.5-flash",
+    contents=prompt
+)
 
-        if line.startswith("-"):
-            claims.append(line[1:].strip())
+        raw = response.text.strip()
 
-        elif line[:2].isdigit():
-            claims.append(line.split(".",1)[1].strip())
+        # Show Gemini response for debugging
+        with st.expander("🤖 Gemini Claim Extraction Output"):
+            st.code(raw)
 
-    return claims
+        # Remove markdown if Gemini returns JSON
+        raw = raw.replace("```json", "")
+        raw = raw.replace("```", "").strip()
+        try:
 
+            parsed = json.loads(raw)
+
+            if isinstance(parsed, list):
+
+                claims = [
+                    str(c).strip()
+                    for c in parsed
+                    if str(c).strip()
+                ]
+
+                return claims
+
+        except Exception:
+            pass
+
+        claims = []
+
+        for line in raw.split("\n"):
+
+            line = line.strip()
+
+            if not line:
+                continue
+
+            # Bullet list
+            if line.startswith("-"):
+                claims.append(line[1:].strip())
+                continue
+
+            # Numbered list
+            if "." in line:
+
+                first = line.split(".", 1)[0]
+
+                if first.isdigit():
+
+                    claims.append(
+                        line.split(".", 1)[1].strip()
+                    )
+
+                    continue
+
+            # Claim: xxx
+            if ":" in line:
+
+                left, right = line.split(":", 1)
+
+                if len(left) < 20:
+                    claims.append(right.strip())
+
+        # Remove duplicates
+
+        unique_claims = []
+
+        for c in claims:
+
+            if c not in unique_claims:
+                unique_claims.append(c)
+
+        return unique_claims
+
+    except Exception as e:
+
+        st.error(f"Claim extraction failed: {e}")
+
+        return []
 
 def verify_claim(claim):
 
-    search = tavily.search(
-        query=claim,
-        search_depth="advanced",
-        max_results=3
-    )
+    try:
 
-    results = search.get("results", [])
+        search = tavily.search(
+            query=claim,
+            search_depth="advanced",
+            max_results=3
+        )
 
-    context = ""
+        results = search.get("results", [])
 
-    for item in results:
-        context += f"""
+        context = ""
+
+        for item in results:
+
+            context += f"""
+
 Title:
 {item.get('title','')}
 
@@ -98,74 +204,118 @@ Content:
 
 URL:
 {item.get('url','')}
+
 """
+        prompt = FACT_CHECK_PROMPT.format(
+            claim=claim,
+            context=context
+        )
 
-    prompt = FACT_CHECK_PROMPT.format(
-        claim=claim,
-        context=context
-    )
+        response = client.models.generate_content(
+            model="gemini-3.5-flash",
+            contents=prompt
+        )
 
-    response = client.models.generate_content(
-        model="gemini-flash-latest",
-        contents=prompt
-    )
+        return response.text, results
 
-    return response.text, results
+    except Exception as e:
 
+        return (
+            f"Error while verifying claim:\n\n{e}",
+            []
+        )
 
 if mode == "✍ Manual Claim":
 
+    st.subheader("Manual Fact Check")
+
     claim = st.text_area(
-        "Enter Claim",
-        placeholder="MS Dhoni is a footballer."
+        "Enter a claim",
+        placeholder="Example: MS Dhoni is a footballer."
     )
 
-    if st.button("Fact Check"):
+    if st.button("Fact Check", use_container_width=True):
 
-        if claim.strip():
+        if not claim.strip():
+            st.warning("Please enter a claim.")
+            st.stop()
 
-            with st.spinner("Checking..."):
-                result, evidence = verify_claim(claim)
+        with st.spinner("Searching the web and verifying..."):
 
-            st.subheader("Result")
-            st.write(result)
+            result, evidence = verify_claim(claim)
 
-            st.subheader("Sources")
+        st.subheader("Result")
+        st.write(result)
 
-            for e in evidence:
+        st.subheader("Evidence")
+
+        if evidence:
+
+            for item in evidence:
+
                 st.markdown(
-                    f"**{e['title']}**\n\n{e['url']}"
+                    f"""
+### {item.get('title','No Title')}
+
+{item.get('content','')}
+
+🔗 {item.get('url','')}
+"""
                 )
+
+        else:
+            st.info("No evidence returned.")
 
 else:
 
+    st.subheader("Upload PDF")
+
     uploaded = st.file_uploader(
-        "Upload PDF",
+        "Choose a PDF",
         type=["pdf"]
     )
 
     if uploaded:
 
-        if st.button("Analyze PDF"):
+        if st.button("📄 Analyze PDF", use_container_width=True):
 
             with st.spinner("Reading PDF..."):
 
                 text = extract_pdf_text(uploaded)
 
-            with st.spinner("Extracting Claims..."):
+            if not text.strip():
+
+                st.error("No readable text found in this PDF.")
+
+                st.stop()
+
+            show_debug(text)
+
+            with st.spinner("Extracting factual claims..."):
 
                 claims = extract_claims(text)
 
-            st.success(f"Found {len(claims)} claims.")
+            if len(claims) == 0:
 
-            for i, claim in enumerate(claims,1):
+                st.error("No factual claims found.")
+
+                st.stop()
+
+            st.success(f"✅ Found {len(claims)} claims.")
+
+            progress = st.progress(0)
+
+            for index, claim in enumerate(claims):
+
+                progress.progress((index + 1) / len(claims))
 
                 st.markdown("---")
-                st.subheader(f"Claim {i}")
+
+                st.subheader(f"Claim {index + 1}")
 
                 st.write(claim)
 
-                with st.spinner("Checking claim..."):
+                with st.spinner("Fact checking..."):
 
                     result, evidence = verify_claim(claim)
 
@@ -179,20 +329,36 @@ else:
 
                     st.error("❌ FALSE")
 
-                else:
+                elif "inaccurate" in verdict:
 
                     st.warning("⚠ INACCURATE")
+
+                else:
+
+                    st.info("ℹ Unable to determine")
 
                 st.write(result)
 
                 with st.expander("Evidence"):
 
-                    for e in evidence:
+                    if evidence:
 
-                        st.markdown(
-                            f"""
-**{e['title']}**
+                        for item in evidence:
 
-{e['url']}
+                            st.markdown(
+                                f"""
+### {item.get('title','No Title')}
+
+{item.get('content','')}
+
+🔗 {item.get('url','')}
 """
-                        )
+                            )
+
+                    else:
+
+                        st.info("No evidence available.")
+
+            progress.empty()
+
+            st.success("🎉 Fact checking completed successfully!")
