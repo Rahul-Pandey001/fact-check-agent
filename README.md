@@ -33,6 +33,7 @@ fact-check-agent/
 │── requirements.txt
 │── .gitignore
 │── README.md
+│── utils.py
 ```
 ---
 
