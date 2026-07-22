@@ -1,6 +1,10 @@
 # 📰 AI Fact Check Agent
 An AI-powered web application that automatically extracts factual claims from PDF documents, verifies them against live web data, and classifies each claim as **Verified**, **Inaccurate**, or **False**.
 ---
+
+# Live demo
+https://fact-check-agent-pmb55vdk5dq6gu3prtctvz.streamlit.app/
+
 # Features
 *  Upload any PDF document
 *  Automatically extract factual claims
